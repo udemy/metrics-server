@@ -19,10 +19,10 @@ import (
 	"os"
 	"runtime"
 
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apiserver/pkg/util/logs"
+	genericapiserver "k8s.io/apiserver/pkg/server"
+	"k8s.io/component-base/logs"
 
-	"github.com/kubernetes-incubator/metrics-server/cmd/metrics-server/app"
+	"sigs.k8s.io/metrics-server/cmd/metrics-server/app"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	cmd := app.NewCommandStartMetricsServer(os.Stdout, os.Stderr, wait.NeverStop)
+	cmd := app.NewMetricsServerCommand(genericapiserver.SetupSignalHandler())
 	cmd.Flags().AddGoFlagSet(flag.CommandLine)
 	if err := cmd.Execute(); err != nil {
 		panic(err)

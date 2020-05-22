@@ -1,147 +1,144 @@
 # Common User-Settable Flags
-# ==========================
-PREFIX?=gcr.io/google_containers
-FLAGS=
+# --------------------------
+REGISTRY?=gcr.io/k8s-staging-metrics-server
 ARCH?=amd64
-GOLANG_VERSION?=1.10
-# You can set this variable for testing and the built image will also be tagged with this name
-IMAGE_NAME?=$(PREFIX)/metrics-server-$(ARCH):$(VERSION)
 
-# by default, build the current arch's binary
-# (this needs to be pre-include, for some reason)
-all: _output/$(ARCH)/metrics-server
+# Release variables
+# ------------------
+GIT_COMMIT?=$(shell git rev-parse "HEAD^{commit}" 2>/dev/null)
+GIT_TAG?=$(shell git describe --abbrev=0 --tags 2>/dev/null)
+BUILD_DATE:=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
-# Constants
-# =========
+# Consts
+# ------
 ALL_ARCHITECTURES=amd64 arm arm64 ppc64le s390x
-ML_PLATFORMS=linux/amd64,linux/arm,linux/arm64,linux/ppc64le,linux/s390x
+export DOCKER_CLI_EXPERIMENTAL=enabled
 
-# Calculated Variables
-# ====================
+# Computed variables
+# ------------------
+HAS_GOLANGCI:=$(shell which golangci-lint)
+GOPATH:=$(shell go env GOPATH)
 REPO_DIR:=$(shell pwd)
 LDFLAGS=-w $(VERSION_LDFLAGS)
-# get the appropriate version information
-include hack/Makefile.buildinfo
-# Set default base image dynamically for each arch
-ifeq ($(ARCH),amd64)
-	BASEIMAGE?=busybox
-endif
-ifeq ($(ARCH),arm)
-	BASEIMAGE?=arm32v7/busybox
-endif
-ifeq ($(ARCH),arm64)
-	BASEIMAGE?=arm64v8/busybox
-endif
-ifeq ($(ARCH),ppc64le)
-	BASEIMAGE?=ppc64le/busybox
-endif
-ifeq ($(ARCH),s390x)
-	BASEIMAGE?=s390x/busybox
-endif
 
-
-# Rules
-# =====
-
-.PHONY: all test-unit container container-* clean container-only container-only-* tmp-dir push do-push-* sub-push-*
+.PHONY: all
+all: _output/$(ARCH)/metrics-server
 
 # Build Rules
 # -----------
 
-pkg/generated/openapi/zz_generated.openapi.go:
-	go run vendor/k8s.io/kube-openapi/cmd/openapi-gen/openapi-gen.go --logtostderr -i k8s.io/metrics/pkg/apis/metrics/v1beta1,k8s.io/apimachinery/pkg/apis/meta/v1,k8s.io/apimachinery/pkg/api/resource,k8s.io/apimachinery/pkg/version -p github.com/kubernetes-incubator/metrics-server/pkg/generated/openapi/ -O zz_generated.openapi -h $(REPO_DIR)/hack/boilerplate.go.txt -r /dev/null
+src_deps=$(shell find pkg cmd -type f -name "*.go")
+LDFLAGS:=-X sigs.k8s.io/metrics-server/pkg/version.gitVersion=$(GIT_TAG) -X sigs.k8s.io/metrics-server/pkg/version.gitCommit=$(GIT_COMMIT) -X sigs.k8s.io/metrics-server/pkg/version.buildDate=$(BUILD_DATE)
+_output/%/metrics-server: $(src_deps) _output vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/types_easyjson.go
+	GOARCH=$* CGO_ENABLED=0 go build -mod=readonly -ldflags "$(LDFLAGS)" -o _output/$*/metrics-server sigs.k8s.io/metrics-server/cmd/metrics-server
 
-# building depends on all go files (this is mostly redundant in the face of go 1.10's incremental builds,
-# but it allows us to safely write actual dependency rules in our makefile)
-src_deps=$(shell find pkg cmd -type f -name "*.go" -and ! -name "zz_generated.*.go")
-_output/%/metrics-server: $(src_deps) pkg/generated/openapi/zz_generated.openapi.go
-	GOARCH=$* CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o _output/$*/metrics-server github.com/kubernetes-incubator/metrics-server/cmd/metrics-server
+vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/types_easyjson.go: vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/types.go vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/go.mod go.mod
+	go get github.com/mailru/easyjson/...
+	$(GOPATH)/bin/easyjson -all vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/types.go
+
+_output:
+	mkdir -p _output
 
 # Image Rules
 # -----------
 
-# build a container using containerized build (the current arch by default)
+.PHONY: container
 container: container-$(ARCH)
 
-container-%: pkg/generated/openapi/zz_generated.openapi.go tmpdir
-	# Run the build in a container in order to have reproducible builds
-	docker run --rm -v $(TEMP_DIR):/build -v $(REPO_DIR):/go/src/github.com/kubernetes-incubator/metrics-server -w /go/src/github.com/kubernetes-incubator/metrics-server golang:$(GOLANG_VERSION) /bin/bash -c "\
-		GOARCH=$(ARCH) CGO_ENABLED=0 go build -ldflags \"$(LDFLAGS)\" -o /build/metrics-server github.com/kubernetes-incubator/metrics-server/cmd/metrics-server"
-
-	# copy the base Dockerfile into the temp dir, and set the base image
-	cp deploy/docker/Dockerfile $(TEMP_DIR)
-	sed -i -e "s|BASEIMAGE|$(BASEIMAGE)|g" $(TEMP_DIR)/Dockerfile
-
-	# run the actual build
-	docker build --pull -t $(IMAGE_NAME) $(TEMP_DIR)
-
-	# remove our TEMP_DIR, as needed
-	rm -rf $(TEMP_DIR)
-
-# build a container using a locally-built binary (the current arch by default)
-container-only: container-only-$(ARCH)
-
-container-only-%: _output/$(ARCH)/metrics-server tmpdir
-	# copy the base Dockerfile and binary into the temp dir, and set the base image
-	cp deploy/docker/Dockerfile $(TEMP_DIR)
-	cp _output/$(ARCH)/metrics-server $(TEMP_DIR)
-	sed -i -e "s|BASEIMAGE|$(BASEIMAGE)|g" $(TEMP_DIR)/Dockerfile
-
-	# run the actual build
-	docker build --pull -t $(IMAGE_NAME) $(TEMP_DIR)
-
-	# remove our TEMP_DIR, as needed
-	rm -rf $(TEMP_DIR)
+.PHONY: container-*
+container-%: vendor/k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1/types_easyjson.go
+	docker build --pull -t $(REGISTRY)/metrics-server-$*:$(GIT_COMMIT) --build-arg GOARCH=$* --build-arg LDFLAGS='$(LDFLAGS)' .
 
 # Official Container Push Rules
 # -----------------------------
 
-# do the actual push for official images
-do-push-%:
-	# push with main tag
-	docker push $(PREFIX)/metrics-server-$*:$(VERSION)
+.PHONY: push
+push: $(addprefix sub-push-,$(ALL_ARCHITECTURES)) push-multi-arch;
 
-	# push alternate tags
-ifeq ($(ARCH),amd64)
-	# TODO: Remove this and push the manifest list as soon as it's working
-	docker tag $(PREFIX)/metrics-server-$*:$(VERSION) $(PREFIX)/metrics-server:$(VERSION)
-	docker push $(PREFIX)/metrics-server:$(VERSION)
-endif
-
-# do build and then push a given official image
+.PHONY: sub-push-*
 sub-push-%: container-% do-push-% ;
 
-# do build and then push all official images
-push: gcr-login $(addprefix sub-push-,$(ALL_ARCHITECTURES)) ;
-	# TODO: push with manifest-tool?
-	# Should depend on target: ./manifest-tool
+.PHONY: do-push-*
+do-push-%:
+	docker tag $(REGISTRY)/metrics-server-$*:$(GIT_COMMIT) $(REGISTRY)/metrics-server-$*:$(GIT_TAG)
+	docker push $(REGISTRY)/metrics-server-$*:$(GIT_TAG)
 
-# log in to the official container registry
-gcr-login:
-ifeq ($(findstring gcr.io,$(PREFIX)),gcr.io)
-	@echo "If you are pushing to a gcr.io registry, you have to be logged in via 'docker login'; 'gcloud docker push' can't push manifest lists yet."
-	@echo "This script is automatically logging you in now with 'gcloud docker -a'"
-	gcloud docker -a
-endif
+.PHONY: push-multi-arch
+push-multi-arch:
+	docker manifest create --amend $(REGISTRY)/metrics-server:$(GIT_TAG) $(shell echo $(ALL_ARCHITECTURES) | sed -e "s~[^ ]*~$(REGISTRY)/metrics-server\-&:$(GIT_TAG)~g")
+	@for arch in $(ALL_ARCHITECTURES); do docker manifest annotate --arch $${arch} $(REGISTRY)/metrics-server:$(GIT_TAG) $(REGISTRY)/metrics-server-$${arch}:${GIT_TAG}; done
+	docker manifest push --purge $(REGISTRY)/metrics-server:$(GIT_TAG)
 
-# Utility Rules
+
+# Release rules
 # -------------
 
-clean:
-	rm -rf _output
-	rm pkg/generated/openapi/zz_generated.openapi.go
+.PHONY: release-tag
+release-tag:
+	git tag $(GIT_TAG)
+	git push origin $(GIT_TAG)
 
+.PHONY: release-manifests
+release-manifests:
+	kubectl kustomize manifests/release > _output/components.yaml
+	echo "Please upload file _output/components.yaml to GitHub release"
+
+# Unit tests
+# ----------
+
+.PHONY: test-unit
+test-unit:
+ifeq ($(ARCH),amd64)
+	GO111MODULE=on GOARCH=$(ARCH) go test -mod=readonly --test.short -race ./pkg/...
+else
+	GO111MODULE=on GOARCH=$(ARCH) go test -mod=readonly --test.short ./pkg/...
+endif
+
+# Binary tests
+# ------------
+
+.PHONY: test-version
+test-version: container
+	IMAGE=$(REGISTRY)/metrics-server-$(ARCH):$(GIT_COMMIT) EXPECTED_VERSION=$(GIT_TAG) ./test/version.sh
+
+# E2e tests
+# -----------
+
+.PHONY: test-e2e
+test-e2e: test-e2e-1.18
+
+.PHONY: test-e2e-all
+test-e2e-all: test-e2e-1.18 test-e2e-1.17 test-e2e-1.16
+
+.PHONY: test-e2e-1.18
+test-e2e-1.18: container-amd64
+	KUBERNETES_VERSION=v1.18.0@sha256:0e20578828edd939d25eb98496a685c76c98d54084932f76069f886ec315d694 IMAGE=$(REGISTRY)/metrics-server-amd64:$(GIT_COMMIT) ./test/e2e.sh
+
+.PHONY: test-e2e-1.17
+test-e2e-1.17: container-amd64
+	KUBERNETES_VERSION=v1.17.0@sha256:0e20578828edd939d25eb98496a685c76c98d54084932f76069f886ec315d694 IMAGE=$(REGISTRY)/metrics-server-amd64:$(GIT_COMMIT) ./test/e2e.sh
+
+.PHONY: test-e2e-1.16
+test-e2e-1.16: container-amd64
+	KUBERNETES_VERSION=v1.16.4@sha256:b91a2c2317a000f3a783489dfb755064177dbc3a0b2f4147d50f04825d016f55 IMAGE=$(REGISTRY)/metrics-server-amd64:$(GIT_COMMIT) ./test/e2e.sh
+
+# Static analysis
+# ---------------
+
+.PHONY: lint
+lint:
+ifndef HAS_GOLANGCI
+	curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(GOPATH)/bin latest
+endif
+	golangci-lint run --timeout 10m --modules-download-mode=readonly
+
+.PHONY: fmt
 fmt:
 	find pkg cmd -type f -name "*.go" | xargs gofmt -s -w
 
-test-unit: pkg/generated/openapi/zz_generated.openapi.go
-ifeq ($(ARCH),amd64)
-	GOARCH=$(ARCH) go test --test.short -race ./pkg/... $(FLAGS)
-else
-	GOARCH=$(ARCH) go test --test.short ./pkg/... $(FLAGS)
-endif
+# Clean
+# -----
 
-# set up a temporary director when we need it
-# it's the caller's responsibility to clean it up
-tmpdir:
-	$(eval TEMP_DIR:=$(shell mktemp -d /tmp/metrics-server.XXXXXX))
+.PHONY: clean
+clean:
+	rm -rf _output

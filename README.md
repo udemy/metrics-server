@@ -1,80 +1,119 @@
 # Kubernetes Metrics Server
 
-## User guide
+Metrics Server is a scalable, efficient source of container resource metrics for Kubernetes
+built-in autoscaling pipelines.
 
-You can find the user guide in
-[the official Kubernetes documentation](https://kubernetes.io/docs/tasks/debug-application-cluster/core-metrics-pipeline/).
+Metrics Server collects resource metrics from Kubelets and exposes them in Kubernetes apiserver through [Metrics API] 
+for use by [Horizontal Pod Autoscaler] and [Vertical Pod Autoscaler]. Metrics API can also be accessed by `kubectl top`,
+making it easier to debug autoscaling pipelines.
 
-## Design
+Metrics Server is not meant for non-autoscaling purposes. For example, don't use it to forward metrics to monitoring solutions, or as a source of monitoring solution metrics.
 
-The detailed design of the project can be found in the following docs:
+Metrics Server offers:
+- A single deployment that works on most clusters (see [Requirements](#requirements))
+- Scalable support up to 5,000 node clusters
+- Resource efficiency: Metrics Server uses 0.5m core of CPU and 4 MB of memory per node
 
-- [Metrics API](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/resource-metrics-api.md)
-- [Metrics Server](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/metrics-server.md)
+## Use cases
 
-For the broader view of monitoring in Kubernetes take a look into
-[Monitoring architecture](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/monitoring_architecture.md)
+You can use Metrics Server for:
+- CPU/Memory based horizontal autoscaling (learn more about [Horizontal Pod Autoscaler])
+- Automatically adjusting/suggesting resources needed by containers (learn more about [Vertical Pod Autoscaler])
+
+Don't use Metrics Server when you need:
+- Non-Kubernetes clusters
+- An accurate source of resource usage metrics
+- Horizontal autoscaling based on other resources then CPU/Memory
+
+For unsupported use cases, check out full monitoring solutions like Prometheus.
+
+## Requirements
+
+Metrics Server has specific requirements for cluster and network configuration. These requirements aren't the default for all cluster
+distributions. Please ensure that your cluster distribution supports these requirements before using Metrics Server:
+- Metrics Server must be [reachable from kube-apiserver]
+- The kube-apiserver must be correctly configured to [enable an aggregation layer]
+- Nodes must have [kubelet authorization] configured to match Metrics Server configuration
+- Container runtime must implement a [container metrics RPCs]
 
 ## Deployment
+
+Metrics Server installation manifests are uploaded with GitHub release.
+
+They are available as `components.yaml` asset on [Metrics Server releases] making them installable via url:
+
+```shell
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.3.6/components.yaml
+```
+
+WARNING: You should no longer use manifests from `master` branch (previously available in `deploy/kubernetes` directory).
+They are now meant solely for development.
 
 Compatibility matrix:
 
 Metrics Server | Metrics API group/version | Supported Kubernetes version
 ---------------|---------------------------|-----------------------------
 0.3.x          | `metrics.k8s.io/v1beta1`  | 1.8+
-0.2.x          | `metrics.k8s.io/v1beta1`  | 1.8+
-0.1.x          | `metrics/v1alpha1`        | 1.7
 
+### Configuration 
 
-In order to deploy metrics-server in your cluster run the following command from
-the top-level directory of this repository:
+Depending on your cluster setup, you may also need to change flags passed to the Metrics Server container.
+Most useful flags:
+- `--kubelet-preferred-address-types` - The priority of node address types used when determining an address for connecting to a particular node (default [Hostname,InternalDNS,InternalIP,ExternalDNS,ExternalIP])
+- `--kubelet-insecure-tls` - Do not verify the CA of serving certificates presented by Kubelets. For testing purposes only.
+- `--requestheader-client-ca-file` - Specify a root certificate bundle for verifying client certificates on incoming requests.
 
-```console
-# Kubernetes 1.7
-$ kubectl create -f deploy/1.7/
+You can get a full list of Metrics Server configuration flags by running:
 
-# Kubernetes > 1.8
-$ kubectl create -f deploy/1.8+/
+```shell
+docker run --rm k8s.gcr.io/metrics-server:v0.3.6 --help
 ```
 
-You can also use this helm chart to deploy the metric-server in your cluster (This isn't supported by the metrics-server maintainers): https://github.com/helm/charts/tree/master/stable/metrics-server
+This [Helm chart](https://github.com/helm/charts/tree/master/stable/metrics-server) can deploy the metric-server service in your cluster. 
 
-## Flags
+Note: This Helm chart isn't supported by Metrics Server maintainers.
 
-Metrics Server supports all the standard Kubernetes API server flags, as
-well as the standard Kubernetes `glog` logging flags.  The most
-commonly-used ones are:
+## Design
 
-- `--logtostderr`: log to standard error instead of files in the
-  container.  You generally want this on.
+Metrics Server is a component in the core metrics pipeline described in [Kubernetes monitoring architecture].
 
-- `--v=<X>`: set log verbosity.  It's generally a good idea to run a log
-  level 1 or 2 unless you're encountering errors.  At log level 10, large
-  amounts of diagnostic information will be reported, include API request
-  and response bodies, and raw metric results from Kubelet.
+For more information, see:
+- [Metrics API design]
+- [Metrics Server design]
 
-- `--secure-port=<port>`: set the secure port.  If you're not running as
-  root, you'll want to set this to something other than the default (port
-  443).
+## Have a question?
 
-- `--tls-cert-file`, `--tls-private-key-file`: the serving certificate and
-  key files.  If not specified, self-signed certificates will be
-  generated, but it's recommended that you use non-self-signed
-  certificates in production.
+Before posting it an issue, first checkout [Frequently Asked Questions].
 
-Additionally, Metrics Server defines a number of flags for configuring its
-behavior:
+## Community, discussion, contribution, and support
 
-- `--metric-resolution=<duration>`: the interval at which metrics will be
-  scraped from Kubelets (defaults to 60s).
+Learn how to engage with the Kubernetes community on the [community page].
 
-- `--kubelet-insecure-tls`: skip verifying Kubelet CA certificates.  Not
-  recommended for production usage, but can be useful in test clusters
-  with self-signed Kubelet serving certificates.
+You can reach the maintainers of this project at:
 
-- `--kubelet-port`: the port to use to connect to the Kubelet (defaults to
-  the default secure Kubelet port, 10250).
+- [Slack channel]
+- [Mailing list]
 
-- `--kubelet-preferred-address-types`: the order in which to consider
-  different Kubelet node address types when connecting to Kubelet.
-  Functions similarly to the flag of the same name on the API server.
+This project is maintained by [SIG Instrumentation]
+
+### Code of conduct
+
+Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct].
+
+[Kubernetes monitoring architecture]: https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/monitoring_architecture.md
+[Metrics API]: https://github.com/kubernetes/metrics
+[Metrics API design]: https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/resource-metrics-api.md
+[Metrics Server design]: https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/metrics-server.md
+[reachable from kube-apiserver]: https://kubernetes.io/docs/concepts/architecture/master-node-communication/#master-to-cluster
+[enable an aggregation layer]: https://kubernetes.io/docs/tasks/access-kubernetes-api/configure-aggregation-layer/
+[kubelet authorization]: https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet-authentication-authorization/
+[container metrics RPCs]:https://github.com/kubernetes/community/blob/master/contributors/devel/sig-node/cri-container-stats.md
+[SIG Instrumentation]: https://github.com/kubernetes/community/tree/master/sig-instrumentation
+[Slack channel]: https://kubernetes.slack.com/messages/sig-instrumentation
+[Mailing list]: https://groups.google.com/forum/#!forum/kubernetes-sig-instrumentation
+[Kubernetes Code of Conduct]: code-of-conduct.md
+[community page]: http://kubernetes.io/community/
+[Horizontal Pod Autoscaler]: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
+[Vertical Pod Autoscaler]: https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler
+[Frequently Asked Questions]: FAQ.md
+[Metrics Server releases]: https://github.com/kubernetes-sigs/metrics-server/releases
